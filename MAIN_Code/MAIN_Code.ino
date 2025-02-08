@@ -23,7 +23,9 @@ const int RS = 33, EN = 25, D4 = 26, D5 = 27, D6 = 14, D7 = 13;
 
 // Khởi tạo đối tượng LCD
 LiquidCrystal lcd(RS, EN, D4, D5, D6, D7);
-
+//Dùng biến toàn cục cho cảm biến
+int chattan_value;
+float ph_value;
 //_______________________________________________________________CAM BIEN LUU LUONG__________________________________________________________________
 #define LED_BUILTIN 2
 #define SENSOR 39
@@ -135,11 +137,11 @@ int chattan_calculation(){
       float compensationVoltage=averageVoltage/compensationCoefficient;
       
       //convert voltage value to tds value
-      tdsValue=(133.42*compensationVoltage*compensationVoltage*compensationVoltage - 255.86*compensationVoltage*compensationVoltage + 857.39*compensationVoltage)*0.5;
+      tdsValue=(133.42*compensationVoltage*compensationVoltage*compensationVoltage - 255.86*compensationVoltage*compensationVoltage + 857.39*compensationVoltage)*0.5 - 166;
       
-      //Serial.print("voltage:");
-      //Serial.print(averageVoltage,2);
-      //Serial.print("V   ");
+      // Serial.print("voltage:");
+      // Serial.print(averageVoltage,2);
+      // Serial.print("V   ");
       // Serial.print("TDS Value:");
       // Serial.print(tdsValue,0);
       // Serial.println("ppm");
@@ -148,89 +150,66 @@ int chattan_calculation(){
 }
 int chattan_getValue(){
   int chattan = chattan_calculation();
-  if(chattan >= 0 || chattan <= 2419){
+  if(chattan >= 20 && chattan <= 2419){
   return chattan;
   }
   else{
-    return -1;
+    return 0;
   }
 }
 //____________________________________________________________________CAM BIEN DO PH_________________________________________________________________
 #define SensorPin 35        // Chân Analog trên ESP32
-#define Offset 0.00         // Hiệu chỉnh giá trị pH
-#define samplingInterval 20  // Thời gian lấy mẫu (ms)
-#define ArrayLenth  40       // Số lần lấy mẫu trung bình
+#define Offset 3.0          // Hiệu chỉnh giá trị pH
+#define SamplingInterval 20  // Thời gian lấy mẫu (ms)
+#define ArrayLength 40       // Số lần lấy mẫu trung bình
 
-int pHArray[ArrayLenth]; 
+int pHArray[ArrayLength]; 
 int pHArrayIndex = 0;
 
 float ph_calculation() {
-  static unsigned long samplingTime = millis();
-  static unsigned long printTime = millis();
-  static float pHValue, voltage;
+    static unsigned long samplingTime = millis();
+    static float pHValue, voltage;
 
-  if (millis() - samplingTime > samplingInterval) {
-    pHArray[pHArrayIndex++] = analogRead(SensorPin);
-    if (pHArrayIndex == ArrayLenth) pHArrayIndex = 0;
+    if (millis() - samplingTime > SamplingInterval) {
+        pHArray[pHArrayIndex++] = analogRead(SensorPin);
+        if (pHArrayIndex == ArrayLength) pHArrayIndex = 0;
 
-    voltage = avergearray(pHArray, ArrayLenth) * 3.3 / 4095;  // Chỉnh lại công thức cho ESP32
-    pHValue = 3.5 * voltage + Offset;  // Công thức tính pH
-    samplingTime = millis();
-  }
+        voltage = averageArray(pHArray, ArrayLength) * (3.3 / 4095.0);
+        pHValue = 7.0 + ((2.5 - voltage) * Offset);  // Hiệu chỉnh theo khoảng 2.5V
 
- 
-    // Serial.print("Voltage: ");
-    // Serial.print(voltage, 2);
-    // Serial.print("    pH value: ");
-    // Serial.println(pHValue, 2);
-  return pHValue;
+        samplingTime = millis();
+    }
+
+    Serial.print("Voltage: ");
+    Serial.print(voltage, 3);
+    Serial.print(" V | pH value: ");
+    Serial.println(pHValue, 2);
+
+    return pHValue;
 }
-float ph_getValue(){
-  int ph = ph_calculation();
-  if(ph >= 1 || ph <= 14){
-  return ph;
-  }
-  else{
-    return -1;
-  }
+
+float ph_getValue() {
+    float ph = ph_calculation();
+    if (ph >= 0 && ph <= 14) {  // Điều kiện hợp lệ của pH
+        return ph;
+    }
+    return 0;  // Giá trị không hợp lệ
 }
-double avergearray(int* arr, int number) {
-  int i, max, min;
-  long amount = 0;
-  double avg;
 
-  if (number <= 0) {
-    //Serial.println("Error: Invalid array size!");
-    return 0;
-  }
+double averageArray(int* arr, int number) {
+    if (number <= 0) return 0;
 
-  if (number < 5) {   // Nếu ít hơn 5 phần tử, tính trung bình luôn
-    for (i = 0; i < number; i++) {
-      amount += arr[i];
-    }
-    avg = (double)amount / number;
-    return avg;
-  } else {
-    if (arr[0] < arr[1]) {
-      min = arr[0]; max = arr[1];
-    } else {
-      min = arr[1]; max = arr[0];
+    int min = arr[0], max = arr[0];
+    long sum = 0;
+
+    for (int i = 0; i < number; i++) {
+        if (arr[i] < min) min = arr[i];
+        if (arr[i] > max) max = arr[i];
+        sum += arr[i];
     }
 
-    for (i = 2; i < number; i++) {
-      if (arr[i] < min) {
-        amount += min;
-        min = arr[i];
-      } else if (arr[i] > max) {
-        amount += max;
-        max = arr[i];
-      } else {
-        amount += arr[i];
-      }
-    }
-    avg = (double)amount / (number - 2);  // Loại bỏ min & max
-    return avg;
-  }
+    sum -= (min + max);  // Loại bỏ giá trị lớn nhất & nhỏ nhất
+    return (double)sum / (number - 2);
 }
 
 //___________________________________________________________________SET---UP_______________________________________________________________________
@@ -297,6 +276,8 @@ void setup() {
     xTaskCreatePinnedToCore(Task1, "Task1",                   2048, NULL, 2, NULL, 1);
     xTaskCreatePinnedToCore(FlowSensorTask, "FlowSensorTask", 3072, NULL, 1, NULL, 1);
     xTaskCreatePinnedToCore(SensorTask, "SensorTask",         3072, NULL, 3, NULL, 0);
+    // Tạo task cho Blynk
+  xTaskCreatePinnedToCore(BlynkTask,    "BlynkTask",          2048, NULL, 4, NULL, 0);
 }
 //_________________________________________HÀM CHẠY CÁC TASK_________________________________
 
@@ -304,8 +285,8 @@ void setup() {
 void Task1(void *pvParameters) {
     while (1) {
         // Đọc dữ liệu cảm biến
-        int chattan = chattan_getValue();
-        float ph = ph_getValue();
+        chattan_value = chattan_getValue();
+        ph_value = ph_getValue();
 
         // In giá trị cảm biến ra Serial Monitor để debug
         // Serial.print("[DEBUG] Chất tan: ");
@@ -319,7 +300,7 @@ void Task1(void *pvParameters) {
         // }
 
         // Kiểm tra chất lượng nước
-        bool isDirty = (chattan >= 500 || ph < 6.5 || ph > 8.5);
+        bool isDirty = (chattan_value >= 1000 || ph_value < 6 || ph_value > 8.5);
 
         // Điều khiển cảnh báo
         if (isDirty) {
@@ -345,23 +326,23 @@ void Task1(void *pvParameters) {
 
         // Hiển thị thông số cảm biến
         lcd.clear();
-        if (chattan == -1) {
+        if (chattan_value == -1) {
             lcd.setCursor(0, 0);
             lcd.print("Sensor Error...");
         } else {
             lcd.setCursor(0, 0);
             lcd.print("Solute: ");
-            lcd.print(chattan);
+            lcd.print(chattan_value);
             lcd.print("ppm");
         }
 
-        if (ph == -1) {
+        if (ph_value == -1) {
             lcd.setCursor(0, 1);
             lcd.print("Sensor Error...");
         } else {
             lcd.setCursor(0, 1);
             lcd.print("pH: ");
-            lcd.print(ph);
+            lcd.print(ph_value);
         }
         vTaskDelay(pdMS_TO_TICKS(3000));
 
@@ -376,18 +357,18 @@ void Task1(void *pvParameters) {
 void FlowSensorTask(void *pvParameters) {
     while (1) {
         if (!waterFlowing) {
-            vTaskDelay(pdMS_TO_TICKS(500));
+            vTaskDelay(pdMS_TO_TICKS(100));
             continue;
         }
 
         // Gọi hàm tính toán lưu lượng
         float currentFlowRate = calculateFlowRate();
 
-        Serial.print("Lưu lượng: ");
-        Serial.print(currentFlowRate);
-        Serial.println(" L/min");
+        // Serial.print("Lưu lượng: ");
+        // Serial.print(currentFlowRate);
+        // Serial.println(" L/min");
 
-        vTaskDelay(pdMS_TO_TICKS(100));
+        vTaskDelay(pdMS_TO_TICKS(10));
     }
 }
 
@@ -395,11 +376,11 @@ void FlowSensorTask(void *pvParameters) {
   // Task gửi dữ liệu lên Blynk
 void SensorTask(void *pvParameters) {
     while (1) {
-        int chattan = chattan_getValue();
-        float ph = ph_getValue();
+        chattan_value = chattan_getValue();
+        ph_value = ph_getValue();
 
-        Blynk.virtualWrite(V1, chattan); // Chất tan ppm
-        Blynk.virtualWrite(V2, ph);      // Độ pH
+        Blynk.virtualWrite(V1, chattan_value); // Chất tan ppm
+        Blynk.virtualWrite(V2, ph_value);      // Độ pH
         Blynk.virtualWrite(V3, 1234);
 
         float flow = calculateFlowRate(); // Lấy giá trị từ hàm tính toán
@@ -416,9 +397,18 @@ void SensorTask(void *pvParameters) {
         vTaskDelay(pdMS_TO_TICKS(100));
     }
 }
+TaskHandle_t BlynkTaskHandle = NULL;
+
+// Hàm task Blynk
+void BlynkTask(void *pvParameters) {
+  while (true) {
+    Blynk.run();  // Gọi Blynk.run() liên tục
+    vTaskDelay(10 / portTICK_PERIOD_MS);  // Delay nhỏ để tránh chiếm quá nhiều CPU
+  }
+}
 //__________________________________________________________________L--O--O--P_______________________________________________________________________
 void loop(){
-  Blynk.run();
+  //Không cần làm gì cả
 }
 // Hàm này sẽ được gọi khi công tắc trong Blynk thay đổi trạng thái
 BLYNK_WRITE(V4){

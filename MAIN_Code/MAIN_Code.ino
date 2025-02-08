@@ -1,40 +1,94 @@
+//Khai báo các thư viện, chân kết nối với ngoại vi
 #include <Arduino.h>
+#include <LiquidCrystal.h>
 
-//---------------Định nghĩa và đặt tên cho các chân cảm biến--------------
-// Cảm biến lưu lượng nước
+//Định nghĩa địa chỉ, tên, mã kết nối với app Blynk IoT
+#define BLYNK_TEMPLATE_ID "TMPL6TGETSmgF"
+#define BLYNK_TEMPLATE_NAME "watering quality testing"
+#define BLYNK_AUTH_TOKEN "aAL7Ba4mxXeoyjMifkDAJSRqA8asqKRl"
+
+// Khai báo thư viện wifi và blynk 
+#include <WiFi.h>
+#include <BlynkSimpleEsp32.h>
+
+// Thông tin WiFi
+char ssid[] = "Quang Hai T3";
+char pass[] = "19741975";
+
+// Chân GPIO32
+#define GPIO32_PIN 32 // Chân điều khiển máy bơm
+
+// Khai báo chân kết nối LCD với ESP32
+const int RS = 33, EN = 25, D4 = 26, D5 = 27, D6 = 14, D7 = 13;
+
+// Khởi tạo đối tượng LCD
+LiquidCrystal lcd(RS, EN, D4, D5, D6, D7);
+
+//_______________________________________________________________CAM BIEN LUU LUONG__________________________________________________________________
 #define LED_BUILTIN 2
 #define SENSOR 39
-  long currentMillis = 0;
-  long previousMillis = 0;
-  int interval = 1000;
-  boolean ledState = LOW;
-  float calibrationFactor = 4.5;
-  volatile byte pulseCount;
-  byte pulseSec = 0;
-  float flowRate;
-  unsigned int flowMilliLitres;
-  unsigned long totalMilliLitres;
-// Cảm biến nồng độ chất tan
+
+    long currentMillis = 0;
+    long previousMillis = 0;
+    int interval = 1000;
+    boolean ledState = LOW;
+
+    //Hệ số hiệu chuẩn cảm 
+    float calibrationFactor = 4.5;
+    //Biến kiểm soát lưu  
+    volatile byte pulseCount;
+    byte pulseSec = 0;
+    float flowRate;
+    unsigned int flowMilliLitres;
+    unsigned long totalMilliLitres;
+
+    //Biến trạng thái nước chảy
+    bool waterFlowing = false;
+
+void IRAM_ATTR pulseCounter() {
+  pulseCount++;
+  waterFlowing = true;  // Có xung nghĩa là nước đang chảy
+}
+
+// Hàm tính toán lưu lượng nước
+float calculateFlowRate() {
+    unsigned long currentMillis = millis();
+    if (currentMillis - previousMillis > interval) {
+        int pulseSec = pulseCount;  // Lấy số xung trong khoảng thời gian
+        pulseCount = 0;  // Reset bộ đếm xung
+
+        if (pulseSec == 0) {
+            waterFlowing = false;
+            return 0.0;
+        }
+
+        // Tính toán lưu lượng (L/min)
+        flowRate = (1000.0 / (currentMillis - previousMillis)) * pulseSec;
+        previousMillis = currentMillis;
+
+        // Tính tổng lượng nước đã chảy (mL)
+        float flowMilliLitres = (flowRate / 60) * 1000;
+        totalMilliLitres += flowMilliLitres;
+
+        return flowRate;
+    }
+    return flowRate;
+}
+//____________________________________________________________CAM BIEN NONG DO CHAT TAN______________________________________________________________
 #define TdsSensorPin 34
 #define VREF 3.3              // analog reference voltage(Volt) of the ADC
 #define SCOUNT  30            // sum of sample point
-  int analogBuffer[SCOUNT];     // store the analog value in the array, read from ADC
-  int analogBufferTemp[SCOUNT];
-  int analogBufferIndex = 0;
-  int copyIndex = 0;
 
-  float averageVoltage = 0;
-  float tdsValue = 0;
-  float temperature = 25;       // current temperature for compensation
 
-// Cảm biến độ PH
+int analogBuffer[SCOUNT];     // store the analog value in the array, read from ADC
+int analogBufferTemp[SCOUNT];
+int analogBufferIndex = 0;
+int copyIndex = 0;
 
-//-----------------Các hàm khởi tạo và tính toán cảm biến----------------
-// Cảm biến lưu lượng nước
-void IRAM_ATTR pulseCounter() {
-  pulseCount++;
-}
-// Cảm biến nồng độ chất tan trong dung dịch
+float averageVoltage = 0;
+float tdsValue = 0;
+float temperature = 25;       // current temperature for compensation
+
 // median filtering algorithm
 int getMedianNum(int bArray[], int iFilterLen){
   int bTab[iFilterLen];
@@ -58,10 +112,133 @@ int getMedianNum(int bArray[], int iFilterLen){
   }
   return bTemp;
 }
-//----Hàm SETUP----
-void setup() {
-  Serial.begin(115200);
+int chattan_calculation(){
+  static unsigned long analogSampleTimepoint = millis();
+  if(millis()-analogSampleTimepoint > 40U){     //every 40 milliseconds,read the analog value from the ADC
+    analogSampleTimepoint = millis();
+    analogBuffer[analogBufferIndex] = analogRead(TdsSensorPin);    //read the analog value and store into the buffer
+    analogBufferIndex++;
+    if(analogBufferIndex == SCOUNT){ 
+      analogBufferIndex = 0;
+    }
+  }   
+  
+    for(copyIndex=0; copyIndex<SCOUNT; copyIndex++){
+      analogBufferTemp[copyIndex] = analogBuffer[copyIndex];
+      
+      // read the analog value more stable by the median filtering algorithm, and convert to voltage value
+      averageVoltage = getMedianNum(analogBufferTemp,SCOUNT) * (float)VREF / 4096.0;
+      
+      //temperature compensation formula: fFinalResult(25^C) = fFinalResult(current)/(1.0+0.02*(fTP-25.0)); 
+      float compensationCoefficient = 1.0+0.02*(temperature-25.0);
+      //temperature compensation
+      float compensationVoltage=averageVoltage/compensationCoefficient;
+      
+      //convert voltage value to tds value
+      tdsValue=(133.42*compensationVoltage*compensationVoltage*compensationVoltage - 255.86*compensationVoltage*compensationVoltage + 857.39*compensationVoltage)*0.5;
+      
+      //Serial.print("voltage:");
+      //Serial.print(averageVoltage,2);
+      //Serial.print("V   ");
+      // Serial.print("TDS Value:");
+      // Serial.print(tdsValue,0);
+      // Serial.println("ppm");
+    }
+    return tdsValue;
+}
+int chattan_getValue(){
+  int chattan = chattan_calculation();
+  if(chattan >= 0 || chattan <= 2419){
+  return chattan;
+  }
+  else{
+    return -1;
+  }
+}
+//____________________________________________________________________CAM BIEN DO PH_________________________________________________________________
+#define SensorPin 35        // Chân Analog trên ESP32
+#define Offset 0.00         // Hiệu chỉnh giá trị pH
+#define samplingInterval 20  // Thời gian lấy mẫu (ms)
+#define ArrayLenth  40       // Số lần lấy mẫu trung bình
 
+int pHArray[ArrayLenth]; 
+int pHArrayIndex = 0;
+
+float ph_calculation() {
+  static unsigned long samplingTime = millis();
+  static unsigned long printTime = millis();
+  static float pHValue, voltage;
+
+  if (millis() - samplingTime > samplingInterval) {
+    pHArray[pHArrayIndex++] = analogRead(SensorPin);
+    if (pHArrayIndex == ArrayLenth) pHArrayIndex = 0;
+
+    voltage = avergearray(pHArray, ArrayLenth) * 3.3 / 4095;  // Chỉnh lại công thức cho ESP32
+    pHValue = 3.5 * voltage + Offset;  // Công thức tính pH
+    samplingTime = millis();
+  }
+
+ 
+    // Serial.print("Voltage: ");
+    // Serial.print(voltage, 2);
+    // Serial.print("    pH value: ");
+    // Serial.println(pHValue, 2);
+  return pHValue;
+}
+float ph_getValue(){
+  int ph = ph_calculation();
+  if(ph >= 1 || ph <= 14){
+  return ph;
+  }
+  else{
+    return -1;
+  }
+}
+double avergearray(int* arr, int number) {
+  int i, max, min;
+  long amount = 0;
+  double avg;
+
+  if (number <= 0) {
+    //Serial.println("Error: Invalid array size!");
+    return 0;
+  }
+
+  if (number < 5) {   // Nếu ít hơn 5 phần tử, tính trung bình luôn
+    for (i = 0; i < number; i++) {
+      amount += arr[i];
+    }
+    avg = (double)amount / number;
+    return avg;
+  } else {
+    if (arr[0] < arr[1]) {
+      min = arr[0]; max = arr[1];
+    } else {
+      min = arr[1]; max = arr[0];
+    }
+
+    for (i = 2; i < number; i++) {
+      if (arr[i] < min) {
+        amount += min;
+        min = arr[i];
+      } else if (arr[i] > max) {
+        amount += max;
+        max = arr[i];
+      } else {
+        amount += arr[i];
+      }
+    }
+    avg = (double)amount / (number - 2);  // Loại bỏ min & max
+    return avg;
+  }
+}
+
+//___________________________________________________________________SET---UP_______________________________________________________________________
+//Sử dụng freeRTOS để chạy wifi và xử lí các ngoại vi khác một cách song song
+void setup() {
+  //Khởi tạo baud rate
+  Serial.begin(115200);
+  //Các khai báo cho các ngoại vi khác______________________
   pinMode(LED_BUILTIN, OUTPUT);
   pinMode(SENSOR, INPUT_PULLUP);
 
@@ -70,44 +247,188 @@ void setup() {
   flowMilliLitres = 0;
   totalMilliLitres = 0;
   previousMillis = 0;
-
+  //Thiết lập ngắt ngoài trên chân cảm biến
   attachInterrupt(digitalPinToInterrupt(SENSOR), pulseCounter, FALLING);
   pinMode(TdsSensorPin,INPUT);
+  //KHỞI TẠO LCD 16x2
+    lcd.begin(16, 2);
+  // KẾT NỐI VỚI WIFI VÀ BLYNK APP
+    WiFi.begin(ssid, pass);
+
+    Serial.print("Đang kết nối WiFi...");
+
+    //LCD hiển thị trạng thái kết nối với 
+    lcd.setCursor(0,0);
+    lcd.print("Connecting......");
+
+    int retry = 0;
+    while (WiFi.status() != WL_CONNECTED) {
+        delay(500);
+
+        Serial.print(".");
+        retry++;
+       if (retry > 20) {  
+
+        Serial.println("\nKhông thể kết nối WiFi! Resetting...");
+        ESP.restart();  // Reset lại ESP32
+      }
+    }
+    //LCD 
+    Serial.println("\nWiFi đã kết nối!");
+    Serial.print("IP: ");
+    Serial.println(WiFi.localIP());
+
+    lcd.setCursor(0,0);
+    lcd.print("Wifi connected");
+    lcd.setCursor(0,1);
+    lcd.print("Initializing....");
+    // Kết nối Blynk
+    Blynk.config(BLYNK_AUTH_TOKEN);
+    Blynk.begin(BLYNK_AUTH_TOKEN, ssid, pass);
+    Blynk.connect();
+
+    //BƠM NƯỚC...........
+    // Thiết lập chân GPIO32 làm đầu ra
+    pinMode(GPIO32_PIN, OUTPUT);
+    digitalWrite(GPIO32_PIN, LOW);  // Đảm bảo GPIO32 tắt khi khởi động
+    
+  //Tạo các task_________________________________
+   // Tạo Task
+    xTaskCreatePinnedToCore(Task1, "Task1",                   2048, NULL, 2, NULL, 1);
+    xTaskCreatePinnedToCore(FlowSensorTask, "FlowSensorTask", 3072, NULL, 1, NULL, 1);
+    xTaskCreatePinnedToCore(SensorTask, "SensorTask",         3072, NULL, 3, NULL, 0);
+}
+//_________________________________________HÀM CHẠY CÁC TASK_________________________________
+
+//________________________________________________________________________________________________________________________LCD_DISPLAY
+void Task1(void *pvParameters) {
+    while (1) {
+        // Đọc dữ liệu cảm biến
+        int chattan = chattan_getValue();
+        float ph = ph_getValue();
+
+        // In giá trị cảm biến ra Serial Monitor để debug
+        // Serial.print("[DEBUG] Chất tan: ");
+        // Serial.print(chattan);
+        // Serial.print(" ppm  |  pH: ");
+        // Serial.println(ph);
+
+        // Kiểm tra nếu cảm biến trả về -1 (lỗi)
+        // if (chattan == -1 || ph == -1) {
+        //     Serial.println("[ERROR] Cảm biến lỗi, kiểm tra lại kết nối!");
+        // }
+
+        // Kiểm tra chất lượng nước
+        bool isDirty = (chattan >= 500 || ph < 6.5 || ph > 8.5);
+
+        // Điều khiển cảnh báo
+        if (isDirty) {
+            //Serial.println("[ALERT] Nước bẩn, bật cảnh báo!");
+            digitalWrite(32, HIGH);
+        } else {
+            //Serial.println("[INFO] Nước ổn định, tắt cảnh báo.");
+            digitalWrite(32, LOW);
+        }
+
+        // Hiển thị dữ liệu lên LCD
+        lcd.clear();
+        if (isDirty) {
+            lcd.setCursor(0, 0);
+            lcd.print("Water Dirty");
+            lcd.setCursor(0, 1);
+            lcd.print("Draining Water");
+        } else {
+            lcd.setCursor(0, 0);
+            lcd.print("Water is Stable");
+        }
+        vTaskDelay(pdMS_TO_TICKS(3000));
+
+        // Hiển thị thông số cảm biến
+        lcd.clear();
+        if (chattan == -1) {
+            lcd.setCursor(0, 0);
+            lcd.print("Sensor Error...");
+        } else {
+            lcd.setCursor(0, 0);
+            lcd.print("Solute: ");
+            lcd.print(chattan);
+            lcd.print("ppm");
+        }
+
+        if (ph == -1) {
+            lcd.setCursor(0, 1);
+            lcd.print("Sensor Error...");
+        } else {
+            lcd.setCursor(0, 1);
+            lcd.print("pH: ");
+            lcd.print(ph);
+        }
+        vTaskDelay(pdMS_TO_TICKS(3000));
+
+        // Thêm delay để tránh vòng lặp quá nhanh
+        vTaskDelay(pdMS_TO_TICKS(100));
+    }
 }
 
-void loop() {
-  currentMillis = millis();
-  if (currentMillis - previousMillis > interval) {
-    pulseSec = pulseCount;
-    pulseCount = 0;
+//________________________________________________________________________________________________________CẢM BIẾN LƯU LƯỢNG
+// Task xử lý lưu lượng nước
+// Task đọc cảm biến lưu lượng
+void FlowSensorTask(void *pvParameters) {
+    while (1) {
+        if (!waterFlowing) {
+            vTaskDelay(pdMS_TO_TICKS(500));
+            continue;
+        }
 
-    // Because this loop may not complete in exactly 1 second intervals, we calculate
-    // the number of milliseconds that have passed since the last execution and use
-    // that to scale the output. We also apply the calibrationFactor to scale the output
-    // based on the number of pulses per second per units of measure
-    // (litres/minute in this case) coming from the sensor.
-    flowRate = (1000.0 / (millis() - previousMillis)) * pulseSec;
-    previousMillis = millis();
+        // Gọi hàm tính toán lưu lượng
+        float currentFlowRate = calculateFlowRate();
+
+        Serial.print("Lưu lượng: ");
+        Serial.print(currentFlowRate);
+        Serial.println(" L/min");
+
+        vTaskDelay(pdMS_TO_TICKS(100));
+    }
+}
+
+//_______________________________________________________________________________________________________________________BLYNK
+  // Task gửi dữ liệu lên Blynk
+void SensorTask(void *pvParameters) {
+    while (1) {
+        int chattan = chattan_getValue();
+        float ph = ph_getValue();
+
+        Blynk.virtualWrite(V1, chattan); // Chất tan ppm
+        Blynk.virtualWrite(V2, ph);      // Độ pH
+        Blynk.virtualWrite(V3, 1234);
+
+        float flow = calculateFlowRate(); // Lấy giá trị từ hàm tính toán
+        Blynk.virtualWrite(V0, flow);
+
+        // Serial.print("BLYNK     Chattan: ");
+        // Serial.print(chattan);
+        // Serial.print("ppm     pH: ");
+        // Serial.println(ph);
+
+        //Serial.println("Đã gửi dữ liệu lên Blynk...");
+        
+        // Chờ 5 giây trước khi gửi tiếp
+        vTaskDelay(pdMS_TO_TICKS(100));
+    }
+}
+//__________________________________________________________________L--O--O--P_______________________________________________________________________
+void loop(){
+  Blynk.run();
+}
+// Hàm này sẽ được gọi khi công tắc trong Blynk thay đổi trạng thái
+BLYNK_WRITE(V4){
+    int pinValue = param.asInt();  // Lấy giá trị từ Blynk (1 hoặc 0)
+
+    if (pinValue == 1) {
+      digitalWrite(GPIO32_PIN, HIGH);  // Bật GPIO32
+    } else {
+      digitalWrite(GPIO32_PIN, LOW);   // Tắt GPIO32
+    }
   }
 
-  // Divide the flow rate in litres/minute by 60 to determine how many millilitres
-  // passed through the sensor in this 1 second interval, then multiply by 1000 to
-  // convert to millilitres.
-  flowMilliLitres = (flowRate / 60) * 1000;
 
-  // Add the millilitres passed in this second to the cumulative total
-  totalMilliLitres += flowMilliLitres;
-
-  // Print the flow rate for this second in litres / minute
-  Serial.print("Flow rate: "); 
-  Serial.print(int(flowRate));  // Print the integer part of the variable
-  Serial.print("L/min");
-  Serial.print("\t");           // Print tab space
-
-  // Print the cumulative total of litres flowed since starting
-  Serial.print("Output Liquid Quantity: "); 
-  Serial.print(totalMilliLitres);
-  Serial.print("mL / "); 
-  Serial.print(totalMilliLitres / 1000);
-  Serial.println("L");
-}

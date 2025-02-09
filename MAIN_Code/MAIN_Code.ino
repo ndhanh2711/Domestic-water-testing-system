@@ -23,10 +23,13 @@ const int RS = 33, EN = 25, D4 = 26, D5 = 27, D6 = 14, D7 = 13;
 
 // Khởi tạo đối tượng LCD
 LiquidCrystal lcd(RS, EN, D4, D5, D6, D7);
+
 //Dùng biến toàn cục cho cảm biến
 int chattan_value;
 float ph_value;
-//_______________________________________________________________CAM BIEN LUU LUONG__________________________________________________________________
+
+
+//✅_______________________________________________________________CAM BIEN LUU LUONG__________________________________________________________________
 #define LED_BUILTIN 2
 #define SENSOR 39
 
@@ -76,7 +79,7 @@ float calculateFlowRate() {
     }
     return flowRate;
 }
-//____________________________________________________________CAM BIEN NONG DO CHAT TAN______________________________________________________________
+//✅____________________________________________________________CAM BIEN NONG DO CHAT TAN______________________________________________________________
 #define TdsSensorPin 34
 #define VREF 3.3              // analog reference voltage(Volt) of the ADC
 #define SCOUNT  30            // sum of sample point
@@ -157,7 +160,7 @@ int chattan_getValue(){
     return 0;
   }
 }
-//____________________________________________________________________CAM BIEN DO PH_________________________________________________________________
+//✅____________________________________________________________________CAM BIEN DO PH_________________________________________________________________
 #define SensorPin 35        // Chân Analog trên ESP32
 #define Offset 3.0          // Hiệu chỉnh giá trị pH
 #define SamplingInterval 20  // Thời gian lấy mẫu (ms)
@@ -180,10 +183,10 @@ float ph_calculation() {
         samplingTime = millis();
     }
 
-    Serial.print("Voltage: ");
-    Serial.print(voltage, 3);
-    Serial.print(" V | pH value: ");
-    Serial.println(pHValue, 2);
+    // Serial.print("Voltage: ");
+    // Serial.print(voltage, 3);
+    // Serial.print(" V | pH value: ");
+    // Serial.println(pHValue, 2);
 
     return pHValue;
 }
@@ -212,11 +215,18 @@ double averageArray(int* arr, int number) {
     return (double)sum / (number - 2);
 }
 
-//___________________________________________________________________SET---UP_______________________________________________________________________
+//✅___________________________________________________________________SET---UP_______________________________________________________________________
 //Sử dụng freeRTOS để chạy wifi và xử lí các ngoại vi khác một cách song song
 void setup() {
   //Khởi tạo baud rate
   Serial.begin(115200);
+
+  //DEBUG
+  esp_reset_reason_t reason = esp_reset_reason();
+    Serial.print("ESP Reset Reason: ");
+    Serial.println(reason);  // In ra lý do reset
+
+
   //Các khai báo cho các ngoại vi khác______________________
   pinMode(LED_BUILTIN, OUTPUT);
   pinMode(SENSOR, INPUT_PULLUP);
@@ -263,7 +273,6 @@ void setup() {
     lcd.print("Initializing....");
     // Kết nối Blynk
     Blynk.config(BLYNK_AUTH_TOKEN);
-    Blynk.begin(BLYNK_AUTH_TOKEN, ssid, pass);
     Blynk.connect();
 
     //BƠM NƯỚC...........
@@ -273,15 +282,22 @@ void setup() {
     
   //Tạo các task_________________________________
    // Tạo Task
-    xTaskCreatePinnedToCore(Task1, "Task1",                   2048, NULL, 2, NULL, 1);
-    xTaskCreatePinnedToCore(FlowSensorTask, "FlowSensorTask", 3072, NULL, 1, NULL, 1);
-    xTaskCreatePinnedToCore(SensorTask, "SensorTask",         3072, NULL, 3, NULL, 0);
+    xTaskCreatePinnedToCore(Task1, "Task1",                   4096, NULL, 2, NULL, 1);
+    xTaskCreatePinnedToCore(FlowSensorTask, "FlowSensorTask", 4096, NULL, 1, NULL, 1);
+    xTaskCreatePinnedToCore(SensorTask, "SensorTask",         4096, NULL, 3, NULL, 0);
     // Tạo task cho Blynk
-  xTaskCreatePinnedToCore(BlynkTask,    "BlynkTask",          2048, NULL, 4, NULL, 0);
+    xTaskCreatePinnedToCore(BlynkTask,    "BlynkTask",        4096, NULL, 4, NULL, 0);
+    xTaskCreatePinnedToCore(AutoModeTask, "AutoTask",         4096, NULL, 1, NULL, 0);
 }
-//_________________________________________HÀM CHẠY CÁC TASK_________________________________
 
-//________________________________________________________________________________________________________________________LCD_DISPLAY
+//_________________________________________HÀM CHẠY CÁC TASK_________________________________
+bool manualControl = false;  // Chế độ điều khiển: false = tự động, true = thủ công
+bool pumpState = false;      // Trạng thái bơm
+unsigned long lastManualTime = 0;  // Lưu thời gian nhấn công tắc gần nhất
+const unsigned long manualTimeout = 60000;  // 60 giây chuyển về tự động
+
+//✅________________________________________________________________________________________________________________________LCD_DISPLAY
+
 void Task1(void *pvParameters) {
     while (1) {
         // Đọc dữ liệu cảm biến
@@ -300,17 +316,14 @@ void Task1(void *pvParameters) {
         // }
 
         // Kiểm tra chất lượng nước
-        bool isDirty = (chattan_value >= 1000 || ph_value < 6 || ph_value > 8.5);
+         int isDirty = (chattan_value > 1000 || ph_value < 6 || ph_value > 8.5);  // Kiểm tra chất lượng nước
 
-        // Điều khiển cảnh báo
-        if (isDirty) {
-            //Serial.println("[ALERT] Nước bẩn, bật cảnh báo!");
-            digitalWrite(32, HIGH);
-        } else {
-            //Serial.println("[INFO] Nước ổn định, tắt cảnh báo.");
-            digitalWrite(32, LOW);
+        if (!manualControl) {  // Nếu ở chế độ tự động
+            pumpState = isDirty;  // Bật/tắt bơm theo chất lượng nước
+            Blynk.virtualWrite(V4, pumpState ? 1 : 0);  // Cập nhật công tắc trên app
         }
 
+        digitalWrite(GPIO32_PIN, pumpState ? HIGH : LOW);  // Điều khiển bơm thực tế
         // Hiển thị dữ liệu lên LCD
         lcd.clear();
         if (isDirty) {
@@ -352,7 +365,7 @@ void Task1(void *pvParameters) {
 }
 
 //________________________________________________________________________________________________________CẢM BIẾN LƯU LƯỢNG
-// Task xử lý lưu lượng nước
+// ✅Task xử lý lưu lượng nước
 // Task đọc cảm biến lưu lượng
 void FlowSensorTask(void *pvParameters) {
     while (1) {
@@ -373,7 +386,7 @@ void FlowSensorTask(void *pvParameters) {
 }
 
 //_______________________________________________________________________________________________________________________BLYNK
-  // Task gửi dữ liệu lên Blynk
+  //✅ Task gửi dữ liệu lên Blynk
 void SensorTask(void *pvParameters) {
     while (1) {
         chattan_value = chattan_getValue();
@@ -381,7 +394,7 @@ void SensorTask(void *pvParameters) {
 
         Blynk.virtualWrite(V1, chattan_value); // Chất tan ppm
         Blynk.virtualWrite(V2, ph_value);      // Độ pH
-        Blynk.virtualWrite(V3, 1234);
+        Blynk.virtualWrite(V3, totalMilliLitres/1000);
 
         float flow = calculateFlowRate(); // Lấy giá trị từ hàm tính toán
         Blynk.virtualWrite(V0, flow);
@@ -399,26 +412,36 @@ void SensorTask(void *pvParameters) {
 }
 TaskHandle_t BlynkTaskHandle = NULL;
 
-// Hàm task Blynk
+//✅ Hàm task Blynk
 void BlynkTask(void *pvParameters) {
   while (true) {
     Blynk.run();  // Gọi Blynk.run() liên tục
     vTaskDelay(10 / portTICK_PERIOD_MS);  // Delay nhỏ để tránh chiếm quá nhiều CPU
   }
 }
+
 //__________________________________________________________________L--O--O--P_______________________________________________________________________
-void loop(){
-  //Không cần làm gì cả
+// ✅ Loop không làm gì cả
+void loop() {
+    // Không cần làm gì vì mọi thứ đã chạy trong task
 }
-// Hàm này sẽ được gọi khi công tắc trong Blynk thay đổi trạng thái
-BLYNK_WRITE(V4){
+// ✅ Hàm xử lý khi người dùng nhấn công tắc trên app Blynk
+BLYNK_WRITE(V4) {
     int pinValue = param.asInt();  // Lấy giá trị từ Blynk (1 hoặc 0)
 
-    if (pinValue == 1) {
-      digitalWrite(GPIO32_PIN, HIGH);  // Bật GPIO32
-    } else {
-      digitalWrite(GPIO32_PIN, LOW);   // Tắt GPIO32
+    manualControl = true;  // Chuyển sang chế độ thủ công
+    lastManualTime = millis();  // Cập nhật thời gian nhấn công tắc
+    pumpState = (pinValue == 1);  // Cập nhật trạng thái bơm
+
+    digitalWrite(GPIO32_PIN, pumpState ? HIGH : LOW);
+    Blynk.virtualWrite(V4, pumpState ? 1 : 0);  // Đồng bộ trạng thái công tắc trên app
+}
+// ✅ Task tự động chuyển về chế độ tự động sau 60 giây
+void AutoModeTask(void *pvParameters) {
+    while (1) {
+        if (manualControl && millis() - lastManualTime > manualTimeout) {
+            manualControl = false;  // Quay về chế độ tự động
+        }
+        vTaskDelay(pdMS_TO_TICKS(1000));
     }
-  }
-
-
+}

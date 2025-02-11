@@ -7,4 +7,4 @@ Document Ph0-14: 1,  https://how2electronics.com/diy-iot-water-ph-meter-using-ph
 
                  2,   https://www.amazon.com/GAOHOU-PH0-14-Detect-Electrode-Arduino/dp/B0799BXMVJ
 
-### Note: Ph-35_Ct-34_Ll-39
+

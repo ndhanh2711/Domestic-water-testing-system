@@ -282,11 +282,17 @@ void setup() {
     
   //Tạo các task_________________________________
    // Tạo Task
-    xTaskCreatePinnedToCore(Task1, "Task1",                   4096, NULL, 2, NULL, 1);
+    //Task thu dữ liệu cảm biến
+    xTaskCreatePinnedToCore(CollectData, "CollectData",       4096, NULL, 5, NULL, 1);
+    //Task hiển thị LCD
+    xTaskCreatePinnedToCore(Task1, "Task1",                   4096, NULL, 2, NULL, 0);
+    //Task nhận biết cảm biến lưu lượng
     xTaskCreatePinnedToCore(FlowSensorTask, "FlowSensorTask", 4096, NULL, 1, NULL, 1);
+    //Task gửi dữ liệu lên BLYNK
     xTaskCreatePinnedToCore(SensorTask, "SensorTask",         4096, NULL, 3, NULL, 0);
-    // Tạo task cho Blynk
+    //Task chạy các lệnh của BLYNK
     xTaskCreatePinnedToCore(BlynkTask,    "BlynkTask",        4096, NULL, 4, NULL, 0);
+    //Task điều khiển máy bơm theo yêu cầu
     xTaskCreatePinnedToCore(AutoModeTask, "AutoTask",         4096, NULL, 1, NULL, 0);
 }
 
@@ -294,15 +300,30 @@ void setup() {
 bool manualControl = false;  // Chế độ điều khiển: false = tự động, true = thủ công
 bool pumpState = false;      // Trạng thái bơm
 unsigned long lastManualTime = 0;  // Lưu thời gian nhấn công tắc gần nhất
-const unsigned long manualTimeout = 60000;  // 60 giây chuyển về tự động
+const unsigned long manualTimeout = 15000;  // 60 giây chuyển về tự động
+int isDirty = 0;
+//✅________________________________________________________________________________________________________________________COLLECT_Data_Task
+void CollectData(void *pvParameters){
+  while(1){
+    // Đọc dữ liệu cảm biến
+        chattan_value = chattan_getValue();
+        ph_value = ph_getValue();
+        // Kiểm tra chất lượng nước
+        isDirty = (chattan_value > 1000 || ph_value < 6 || ph_value > 8.5);  // Kiểm tra chất lượng nước
 
+        if (!manualControl) {  // Nếu ở chế độ tự động
+            pumpState = isDirty;  // Bật/tắt bơm theo chất lượng nước
+            Blynk.virtualWrite(V4, pumpState ? 1 : 0);  // Cập nhật công tắc trên app
+        }
+
+        digitalWrite(GPIO32_PIN, pumpState ? HIGH : LOW);  // Điều khiển bơm thực tế
+    vTaskDelay(pdMS_TO_TICKS(100));
+  }
+}
 //✅________________________________________________________________________________________________________________________LCD_DISPLAY
 
 void Task1(void *pvParameters) {
     while (1) {
-        // Đọc dữ liệu cảm biến
-        chattan_value = chattan_getValue();
-        ph_value = ph_getValue();
 
         // In giá trị cảm biến ra Serial Monitor để debug
         // Serial.print("[DEBUG] Chất tan: ");
@@ -315,15 +336,6 @@ void Task1(void *pvParameters) {
         //     Serial.println("[ERROR] Cảm biến lỗi, kiểm tra lại kết nối!");
         // }
 
-        // Kiểm tra chất lượng nước
-         int isDirty = (chattan_value > 1000 || ph_value < 6 || ph_value > 8.5);  // Kiểm tra chất lượng nước
-
-        if (!manualControl) {  // Nếu ở chế độ tự động
-            pumpState = isDirty;  // Bật/tắt bơm theo chất lượng nước
-            Blynk.virtualWrite(V4, pumpState ? 1 : 0);  // Cập nhật công tắc trên app
-        }
-
-        digitalWrite(GPIO32_PIN, pumpState ? HIGH : LOW);  // Điều khiển bơm thực tế
         // Hiển thị dữ liệu lên LCD
         lcd.clear();
         if (isDirty) {
@@ -442,6 +454,6 @@ void AutoModeTask(void *pvParameters) {
         if (manualControl && millis() - lastManualTime > manualTimeout) {
             manualControl = false;  // Quay về chế độ tự động
         }
-        vTaskDelay(pdMS_TO_TICKS(1000));
+        vTaskDelay(pdMS_TO_TICKS(300));
     }
 }

@@ -35,7 +35,7 @@ float ph_value;
 //++++++++++
 // Khai báo đối tượng Preferences
 Preferences preferences;
-int totalMilliLitres30Days = 0;   // Tổng lượng nước trong 30 ngày
+float totalMilliLitres30Days = 0;   // Tổng lượng nước trong 30 ngày
 int dayCounter = 0;                 // Đếm số ngày
 //✅_______________________________________________________________CAM BIEN LUU LUONG__________________________________________________________________
 #define LED_BUILTIN 2
@@ -52,8 +52,8 @@ int dayCounter = 0;                 // Đếm số ngày
     volatile byte pulseCount;
     byte pulseSec = 0;
     float flowRate;
-    unsigned int flowMilliLitres;
-    unsigned long totalMilliLitres;
+    float flowMilliLitres;
+    float totalMilliLitres;
 
     //Biến trạng thái nước chảy
     bool waterFlowing = false;
@@ -81,8 +81,8 @@ float calculateFlowRate() {
 
         // Tính tổng lượng nước đã chảy (mL)
         float flowMilliLitres = (flowRate / 60) * 1000;
-        totalMilliLitres += flowMilliLitres;
-        totalMilliLitres30Days += flowMilliLitres;
+        totalMilliLitres += flowMilliLitres/5;
+        totalMilliLitres30Days += flowMilliLitres/5;
         return flowRate;
     }
     return flowRate;
@@ -526,3 +526,4 @@ void BlynkTask(void *pvParameters) {
 void loop() {
     // Không cần làm gì vì mọi thứ đã chạy trong task
 }
+

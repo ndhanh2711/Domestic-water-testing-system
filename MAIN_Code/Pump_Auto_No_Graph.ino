@@ -2,7 +2,7 @@
 #include <Arduino.h>
 #include <LiquidCrystal.h>
 #include <Preferences.h>  // Thay thế NVSFlash.h bằng Preferences
-
+#include <ctime>  // Để dùng hàm mktime()
 #define BLYNK_PRINT Serial
 //Định nghĩa địa chỉ, tên, mã kết nối với app Blynk IoT
 #define BLYNK_TEMPLATE_ID "TMPL6TGETSmgF"
@@ -14,9 +14,11 @@
 #include <BlynkSimpleEsp32.h>
 
 // Thông tin WiFi
-char ssid[] = "Quang Hai T3";
-char pass[] = "19741975";
+char ssid[] = "30 PDG";
+char pass[] = "bktech1017";
 
+// char ssid[] = "Quang Hai T3";
+// char pass[] = "19741975";
 // Chân GPIO32
 #define GPIO32_PIN 32 // Chân điều khiển máy bơm
 
@@ -33,8 +35,8 @@ float ph_value;
 //++++++++++
 // Khai báo đối tượng Preferences
 Preferences preferences;
-
-
+int totalMilliLitres30Days = 0;   // Tổng lượng nước trong 30 ngày
+int dayCounter = 0;                 // Đếm số ngày
 //✅_______________________________________________________________CAM BIEN LUU LUONG__________________________________________________________________
 #define LED_BUILTIN 2
 #define SENSOR 39
@@ -80,57 +82,91 @@ float calculateFlowRate() {
         // Tính tổng lượng nước đã chảy (mL)
         float flowMilliLitres = (flowRate / 60) * 1000;
         totalMilliLitres += flowMilliLitres;
-
+        totalMilliLitres30Days += flowMilliLitres;
         return flowRate;
     }
     return flowRate;
 }
-//______________________
-// Hàm để đọc giá trị từ bộ nhớ không bay hơi
-void readFromNVS() {
-  preferences.begin("storage", false);  // Mở bộ nhớ NVS (chế độ đọc)
-
-  String storedDate;
-  float storedValue;
-
-  if (preferences.isKey("date") && preferences.isKey("value")) {
-    storedDate = preferences.getString("date");  // Lấy ngày lưu trữ
-    storedValue = preferences.getFloat("value"); // Lấy giá trị lưu trữ
-
-    time_t now = time(nullptr);
-    struct tm* timeinfo = localtime(&now);
-    char currentDate[20];
-    strftime(currentDate, sizeof(currentDate), "%Y-%m-%d", timeinfo);  // Lấy ngày hiện tại
-
-    if (storedDate == String(currentDate)) {
-      // Nếu ngày giống với ngày lưu trữ, tiếp tục cộng dồn giá trị
-      totalMilliLitres = storedValue;
-    } else {
-      // Nếu ngày khác, reset giá trị
-      totalMilliLitres = 0;
-    }
-  }
-
-  preferences.end();  // Đóng bộ nhớ NVS
-}
-
-// Hàm để lưu giá trị vào bộ nhớ không bay hơi
-void saveToNVS() {
-  preferences.begin("storage", false);  // Mở bộ nhớ NVS (chế độ ghi)
+// 📌 Hàm lấy ngày hiện tại
+String getCurrentDate() {
   time_t now = time(nullptr);
   struct tm* timeinfo = localtime(&now);
   char currentDate[20];
-  strftime(currentDate, sizeof(currentDate), "%Y-%m-%d", timeinfo);  // Lấy ngày hiện tại
-
-  preferences.putString("date", String(currentDate));   // Lưu ngày
-  preferences.putFloat("value", totalMilliLitres);     // Lưu giá trị
-  preferences.end();  // Đóng bộ nhớ NVS
+  strftime(currentDate, sizeof(currentDate), "%Y-%m-%d", timeinfo);
+  return String(currentDate);
 }
 
-// Hàm gửi dữ liệu lên Blynk
+void readFromNVS() {
+  preferences.begin("storage", false);  
+
+  // Đọc dữ liệu từ NVS
+  String storedDate = preferences.getString("date", "");  
+  totalMilliLitres = preferences.getFloat("value", 0);
+  totalMilliLitres30Days = preferences.getFloat("value30", 0);
+  dayCounter = preferences.getInt("dayCounter", 0);
+
+  String currentDate = getCurrentDate();
+
+  // 📌 Chuyển ngày thành timestamp để tính số ngày trôi qua
+  struct tm timeStored = {0}, timeNow = {0};
+
+  sscanf(storedDate.c_str(), "%d-%d-%d", &timeStored.tm_year, &timeStored.tm_mon, &timeStored.tm_mday);
+  sscanf(currentDate.c_str(), "%d-%d-%d", &timeNow.tm_year, &timeNow.tm_mon, &timeNow.tm_mday);
+  
+  timeStored.tm_year -= 1900;  // struct tm cần tính từ năm 1900
+  timeStored.tm_mon -= 1;      // struct tm tính tháng từ 0-11
+  timeNow.tm_year -= 1900;
+  timeNow.tm_mon -= 1;
+
+  time_t t1 = mktime(&timeStored);
+  time_t t2 = mktime(&timeNow);
+
+  if (t1 != -1 && t2 != -1) {
+    int daysPassed = (t2 - t1) / 86400;  // 86400s = 1 ngày
+    if (daysPassed > 0) {
+      totalMilliLitres = 0;
+
+      dayCounter += daysPassed;  // 📌 Cộng dồn đúng số ngày
+
+      if (dayCounter >= 30) {
+        totalMilliLitres30Days = 0;
+        dayCounter = 0;
+      }
+
+      saveToNVS();
+    }
+  }
+
+  preferences.end();  
+}
+
+// 📌 Lưu dữ liệu vào NVS mỗi khi cập nhật nước trong ngày
+void saveToNVS() {
+  preferences.begin("storage", false);
+  
+  String currentDate = getCurrentDate();
+  preferences.putString("date", currentDate);
+  preferences.putFloat("value", totalMilliLitres);    
+  preferences.putFloat("value30", totalMilliLitres30Days);   
+  preferences.putInt("dayCounter", dayCounter);
+
+  preferences.end();  
+}
+
+
+// 📌 Gửi dữ liệu lên Blynk
 void sendData() {
-  Blynk.virtualWrite(V3, totalMilliLitres / 1000);  // Gửi giá trị lên app Blynk (đổi sang đơn vị lít)
-  saveToNVS();  // Lưu lại dữ liệu vào NVS
+  Blynk.virtualWrite(V3, totalMilliLitres / 1000);  
+  Blynk.virtualWrite(V4, totalMilliLitres30Days / 1000);
+
+  Serial.print("Today: ");
+  Serial.print(totalMilliLitres / 1000);
+  Serial.print(" L | Total Days: ");
+  Serial.print(dayCounter);
+  Serial.print(" | Month Total: ");
+  Serial.println(totalMilliLitres30Days / 1000);
+
+  saveToNVS();  
 }
 //✅____________________________________________________________CAM BIEN NONG DO CHAT TAN______________________________________________________________
 #define TdsSensorPin 34
@@ -193,7 +229,7 @@ int chattan_calculation(){
       float compensationVoltage=averageVoltage/compensationCoefficient;
       
       //convert voltage value to tds value
-      tdsValue=(133.42*compensationVoltage*compensationVoltage*compensationVoltage - 255.86*compensationVoltage*compensationVoltage + 857.39*compensationVoltage)*0.5 - 166;
+      tdsValue=(133.42*compensationVoltage*compensationVoltage*compensationVoltage - 255.86*compensationVoltage*compensationVoltage + 857.39*compensationVoltage)*0.5;
       
       // Serial.print("voltage:");
       // Serial.print(averageVoltage,2);
@@ -202,6 +238,7 @@ int chattan_calculation(){
       // Serial.print(tdsValue,0);
       // Serial.println("ppm");
     }
+
     return tdsValue;
 }
 int chattan_getValue(){
@@ -335,10 +372,9 @@ void setup() {
 
 
     configTime(7 * 3600, 0, "pool.ntp.org");  // Đồng bộ thời gian
-    delay(5000);  // Đợi thời gian cập nhật
+    delay(2000);  // Đợi thời gian cập nhật
 
     readFromNVS();  // Đọc dữ liệu đã lưu trong NVS
-
     // Gửi dữ liệu ban đầu
     sendData();
   //Tạo các task_________________________________
@@ -362,10 +398,13 @@ void CollectData(void *pvParameters){
   while(1){
     // Đọc dữ liệu cảm biến
         chattan_value = chattan_getValue();
+
         ph_value = ph_getValue();
+        
         // Kiểm tra chất lượng nước
         isDirty = (chattan_value > 1000 || ph_value < 6 || ph_value > 8.5);  // Kiểm tra chất lượng nước
-        digitalWrite(GPIO32_PIN, isDirty ? HIGH : LOW);  // Điều khiển bơm thực tế
+        digitalWrite(GPIO32_PIN, isDirty ? HIGH : LOW); 
+       // Điều khiển bơm thực tế
     vTaskDelay(pdMS_TO_TICKS(100));
   }
 }
@@ -373,7 +412,6 @@ void CollectData(void *pvParameters){
 
 void Task1(void *pvParameters) {
     while (1) {
-
         // In giá trị cảm biến ra Serial Monitor để debug
         // Serial.print("[DEBUG] Chất tan: ");
         // Serial.print(chattan);
@@ -384,7 +422,6 @@ void Task1(void *pvParameters) {
         // if (chattan == -1 || ph == -1) {
         //     Serial.println("[ERROR] Cảm biến lỗi, kiểm tra lại kết nối!");
         // }
-
         // Hiển thị dữ liệu lên LCD
         lcd.clear();
         if (isDirty) {
@@ -395,6 +432,10 @@ void Task1(void *pvParameters) {
         } else {
             lcd.setCursor(0, 0);
             lcd.print("Water is Stable");
+            lcd.setCursor(0, 1);
+            lcd.print("Day:");
+            lcd.print(dayCounter);
+            lcd.print("/30");
         }
         vTaskDelay(pdMS_TO_TICKS(3000));
 
@@ -450,12 +491,11 @@ void FlowSensorTask(void *pvParameters) {
   //✅ Task gửi dữ liệu lên Blynk
 void SensorTask(void *pvParameters) {
     while (1) {
-        chattan_value = chattan_getValue();
-        ph_value = ph_getValue();
 
         Blynk.virtualWrite(V1, chattan_value); // Chất tan ppm
         Blynk.virtualWrite(V2, ph_value);      // Độ pH
         Blynk.virtualWrite(V3, totalMilliLitres/1000);
+        Blynk.virtualWrite(V4, totalMilliLitres30Days / 1000);
         sendData();
         float flow = calculateFlowRate(); // Lấy giá trị từ hàm tính toán
         Blynk.virtualWrite(V0, flow);
